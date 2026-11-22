@@ -26,11 +26,11 @@ public enum Mode
      */
     internal const function flags() : int32
     {
-        int32 $base = 65536 | 64;
+        int32 $base = SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI;
         return match ($this) {
-            Mode::readOnly => $base | 1,
-            Mode::readWrite => $base | 2,
-            Mode::create => $base | 2 | 4,
+            Mode::readOnly => $base | SQLITE_OPEN_READONLY,
+            Mode::readWrite => $base | SQLITE_OPEN_READWRITE,
+            Mode::create => $base | SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
         };
     }
 }

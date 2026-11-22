@@ -34,10 +34,7 @@ public class Statement
 
     destructor()
     {
-        if ($this->raw != null) {
-            c_finalize($this->raw);
-            $this->raw = null;
-        }
+        c_finalize($this->raw);
     }
 
     /**
@@ -55,43 +52,8 @@ public class Statement
     public function bind(usize $at, const Value& $v) : status<Error>
     {
         try $this->db->live();
-        int32 $i = ($at + 1) as int32;
-        int32 $rc = 0;
         ptr<Mutex> $lock = $this->db->lock();
-        match ($v) {
-            Value::none => {
-                $rc = c_bind_null($this->raw, $i);
-            },
-            Value::int($x) => {
-                $rc = c_bind_int($this->raw, $i, $x);
-            },
-            Value::float($x) => {
-                $rc = c_bind_float($this->raw, $i, $x);
-            },
-            // -1 is SQLITE_TRANSIENT (SQLite copies the bytes), 1 is SQLITE_UTF8
-            Value::text($x) => {
-                if ($x->empty()) {
-                    string $blank = '';
-                    $rc = c_bind_text($this->raw, $i, $blank->cstr(), 0, -1, 1);
-                } else {
-                    $rc = c_bind_text($this->raw, $i, $x->data(), $x->size() as uint64, -1, 1);
-                }
-            },
-            Value::blob($x) => {
-                if ($x->empty()) {
-                    $rc = c_bind_zeroblob($this->raw, $i, 0);
-                } else {
-                    $rc = c_bind_blob($this->raw, $i, $x->data(), $x->size() as uint64, -1);
-                }
-            },
-        };
-        if ($rc != 0) {
-            Error $e = Error::of($this->db->raw, $rc);
-            c_unlock($lock);
-            return .error($e);
-        }
-        c_unlock($lock);
-        return .ok();
+        return $this->db->settle($lock, $this->put($at, $v));
     }
 
     /**
@@ -99,12 +61,18 @@ public class Statement
      */
     public function bind(const array<Value>& $values) : status<Error>
     {
+        try $this->db->live();
+        ptr<Mutex> $lock = $this->db->lock();
+        int32 $rc = 0;
         usize $at = 0;
         foreach ($values as const &$v) {
-            try $this->bind($at, $v);
+            $rc = $this->put($at, $v);
+            if ($rc != 0) {
+                break;
+            }
             $at++;
         }
-        return .ok();
+        return $this->db->settle($lock, $rc);
     }
 
     /**
@@ -115,17 +83,12 @@ public class Statement
         try $this->db->live();
         ptr<Mutex> $lock = $this->db->lock();
         int32 $rc = c_step($this->raw);
-        if ($rc == Code::row->value()) {
-            c_unlock($lock);
-            return .ok(true);
+        bool $row = $rc == Code::row->value();
+        if ($row || $rc == Code::done->value()) {
+            $rc = 0;
         }
-        if ($rc == Code::done->value()) {
-            c_unlock($lock);
-            return .ok(false);
-        }
-        Error $e = Error::of($this->db->raw, $rc);
-        c_unlock($lock);
-        return .error($e);
+        try $this->db->settle($lock, $rc);
+        return .ok($row);
     }
 
     /**
@@ -136,15 +99,14 @@ public class Statement
     {
         while (true) {
             bool $more = guard $this->step() else ($e) {
-                c_reset($this->raw);
+                $this->reset();
                 return .error($e);
             }
             if (!$more) {
-                c_reset($this->raw);
+                $this->reset();
                 return .ok();
             }
         }
-        return .ok();
     }
 
     /**
@@ -179,7 +141,7 @@ public class Statement
      */
     public const function kind(usize $at) : Kind
     {
-        return Kind::from(c_column_type($this->raw, $at as int32)) ?? Kind::none;
+        return Kind::of(c_column_type($this->raw, $at as int32));
     }
 
     /**
@@ -220,9 +182,7 @@ public class Statement
         if ($this->isNull($at)) {
             return null;
         }
-        ptr<const uint8> $p = c_column_text($this->raw, $at as int32);
-        int32 $n = c_column_bytes($this->raw, $at as int32);
-        return copyBytes($p, $n as usize);
+        return $this->copied($at, c_column_text($this->raw, $at as int32));
     }
 
     /**
@@ -233,8 +193,25 @@ public class Statement
         if ($this->isNull($at)) {
             return null;
         }
-        ptr<const uint8> $p = c_column_blob($this->raw, $at as int32);
-        int32 $n = c_column_bytes($this->raw, $at as int32);
-        return copyBytes($p, $n as usize);
+        return $this->copied($at, c_column_blob($this->raw, $at as int32));
+    }
+
+    private function put(usize $at, const Value& $v) : int32
+    {
+        int32 $i = ($at + 1) as int32;
+        return match ($v) {
+            Value::none => c_bind_null($this->raw, $i),
+            Value::int($x) => c_bind_int($this->raw, $i, $x),
+            Value::float($x) => c_bind_float($this->raw, $i, $x),
+            Value::text($x) => c_bind_text($this->raw, $i, $x->data(), $x->size() as uint64, SQLITE_TRANSIENT, SQLITE_UTF8),
+            Value::blob($x) => c_bind_blob($this->raw, $i, $x->data(), $x->size() as uint64, SQLITE_TRANSIENT),
+        };
+    }
+
+    // the bytes at `$p`, which column_text or column_blob just answered for `$at`; their size is
+    // only known after that call
+    private const function copied(usize $at, ptr<const uint8> $p) : string
+    {
+        return copyBytes($p, c_column_bytes($this->raw, $at as int32) as usize);
     }
 }

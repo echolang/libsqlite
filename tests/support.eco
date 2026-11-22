@@ -1,0 +1,23 @@
+/**
+ * Helpers every test file shares.
+ */
+
+use ecotest::expect;
+
+/**
+ * A fresh database in memory; one that cannot open stops the test.
+ */
+function fresh() : sqlite::Database
+{
+    return expect(sqlite::Database::memory())->ok();
+}
+
+/**
+ * How many rows table `$table` of `$db` holds.
+ */
+function count(sqlite::Database $db, const string& $table) : int64
+{
+    sqlite::Statement $q = expect($db->prepare("SELECT count(*) FROM {$table}"))->ok();
+    expect($q->step())->ok(true);
+    return expect($q->int(0))->some();
+}

@@ -17,7 +17,7 @@ extern struct Prepared;
 extern struct Mutex;
 
 // every C symbol libsqlite is built from, and nothing else; destructor arguments are pointer
-// sized integers so SQLITE_TRANSIENT (-1) can be passed
+// sized integers so SQLITE_TRANSIENT can be passed
 internal extern {
     function sqlite3_libversion_number as c_version() : int32;
     function sqlite3_open_v2 as c_open(ptr<const uint8> $path, ptr<ptr<Handle>> $out, int32 $flags, ptr<const uint8> $vfs) : int32;
@@ -41,7 +41,6 @@ internal extern {
     function sqlite3_bind_double as c_bind_float(ptr<Prepared> $s, int32 $at, float64 $v) : int32;
     function sqlite3_bind_text64 as c_bind_text(ptr<Prepared> $s, int32 $at, ptr<const uint8> $text, uint64 $bytes, int64 $destructor, uint8 $encoding) : int32;
     function sqlite3_bind_blob64 as c_bind_blob(ptr<Prepared> $s, int32 $at, ptr<const uint8> $data, uint64 $bytes, int64 $destructor) : int32;
-    function sqlite3_bind_zeroblob as c_bind_zeroblob(ptr<Prepared> $s, int32 $at, int32 $bytes) : int32;
     function sqlite3_step as c_step(ptr<Prepared> $s) : int32;
     function sqlite3_reset as c_reset(ptr<Prepared> $s) : int32;
     function sqlite3_clear_bindings as c_clear(ptr<Prepared> $s) : int32;
@@ -56,20 +55,29 @@ internal extern {
     function sqlite3_column_bytes as c_column_bytes(ptr<Prepared> $s, int32 $at) : int32;
 }
 
+// the numbers SQLite's C API takes and answers, by their C names
+internal const int32 SQLITE_OPEN_READONLY = 1;
+internal const int32 SQLITE_OPEN_READWRITE = 2;
+internal const int32 SQLITE_OPEN_CREATE = 4;
+internal const int32 SQLITE_OPEN_URI = 64;
+internal const int32 SQLITE_OPEN_FULLMUTEX = 65536;
+internal const int64 SQLITE_TRANSIENT = -1;
+internal const uint8 SQLITE_UTF8 = 1;
+internal const int32 SQLITE_CONSTRAINT_FOREIGNKEY = 787;
+internal const int32 SQLITE_CONSTRAINT_NOTNULL = 1299;
+internal const int32 SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
+internal const int32 SQLITE_CONSTRAINT_UNIQUE = 2067;
+
 /**
  * `$bytes` bytes from `$from`, copied into a string of their own: SQLite reuses the buffer on the
  * next step, and text or a blob may hold zero bytes, so no terminator is trusted.
  */
 internal function copyBytes(ptr<const uint8> $from, usize $bytes) : string
 {
-    string $out = '';
     if ($bytes == 0 || $from:$ == null) {
-        return $out;
+        return '';
     }
-    $out->reserve($bytes);
-    mem::copy($out->spare(), ptr<uint8>($from:$), $bytes);
-    $out->commit($bytes);
-    return $out;
+    return str::from($from, $bytes);
 }
 
 /**
@@ -80,5 +88,5 @@ internal function copyText(ptr<const uint8> $from) : string
     if ($from:$ == null) {
         return '';
     }
-    return str::from(ptr<uint8>($from:$));
+    return str::from($from);
 }

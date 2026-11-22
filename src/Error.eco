@@ -46,7 +46,7 @@ public struct Error
      */
     public const function unique() : bool
     {
-        return $this->code == 2067 || $this->code == 1555;
+        return $this->code == SQLITE_CONSTRAINT_UNIQUE || $this->code == SQLITE_CONSTRAINT_PRIMARYKEY;
     }
 
     /**
@@ -54,7 +54,7 @@ public struct Error
      */
     public const function foreignKey() : bool
     {
-        return $this->code == 787;
+        return $this->code == SQLITE_CONSTRAINT_FOREIGNKEY;
     }
 
     /**
@@ -62,7 +62,7 @@ public struct Error
      */
     public const function notNull() : bool
     {
-        return $this->code == 1299;
+        return $this->code == SQLITE_CONSTRAINT_NOTNULL;
     }
 
     /**
@@ -79,15 +79,11 @@ public struct Error
      */
     internal static function of(ptr<Handle> $db, int32 $code) : Error
     {
-        if ($db == null) {
+        // a connection whose last error is another code holds the message of an older failure
+        if ($db == null || (c_errcode($db) & 255) != ($code & 255)) {
             return Error($code, copyText(c_errstr($code)));
         }
-        int32 $extended = c_errcode($db);
-        if (($extended & 255) != ($code & 255)) {
-            // the connection's message belongs to an older failure
-            return Error($code, copyText(c_errstr($code)));
-        }
-        return Error($extended, copyText(c_errmsg($db)));
+        return Error(c_errcode($db), copyText(c_errmsg($db)));
     }
 }
 

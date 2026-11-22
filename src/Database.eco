@@ -39,8 +39,7 @@ public class Database
      */
     public static function open(const std::fs::path& $path, mode: Mode $mode = .create) : result<Database, Error>
     {
-        string $name = $path->string();
-        return Database::connect($name, $mode);
+        return Database::connect($path->string(), $mode);
     }
 
     /**
@@ -65,16 +64,11 @@ public class Database
     public function exec(const string& $sql) : status<Error>
     {
         try $this->live();
-        string $text = $sql->clone();
-        ptr<Mutex> $lock = $this->lock();
-        int32 $rc = c_exec($this->raw, $text->cstr(), null, null, null);
-        if ($rc != 0) {
-            Error $e = Error::of($this->raw, $rc);
-            c_unlock($lock);
-            return .error($e);
+        if (!$sql->terminated()) {
+            return $this->exec($sql->clone());
         }
-        c_unlock($lock);
-        return .ok();
+        ptr<Mutex> $lock = $this->lock();
+        return $this->settle($lock, c_exec($this->raw, $sql->cstr(), null, null, null));
     }
 
     /**
@@ -83,18 +77,9 @@ public class Database
     public function prepare(const string& $sql) : result<Statement, Error>
     {
         try $this->live();
-        if ($sql->empty()) {
-            return .error(Error::blank());
-        }
         ptr<Prepared> $out = null;
         ptr<Mutex> $lock = $this->lock();
-        int32 $rc = c_prepare($this->raw, $sql->data(), $sql->size() as int32, &$out, null);
-        if ($rc != 0) {
-            Error $e = Error::of($this->raw, $rc);
-            c_unlock($lock);
-            return .error($e);
-        }
-        c_unlock($lock);
+        try $this->settle($lock, c_prepare($this->raw, $sql->data(), $sql->size() as int32, &$out, null));
         if ($out == null) {
             return .error(Error::blank());
         }
@@ -108,7 +93,7 @@ public class Database
     public function busyTimeout(time::duration $wait) : void
     {
         if ($this->raw != null) {
-            int64 $ms = math::min($wait->as_millis(), 2147483647 as int64);
+            int64 $ms = math::min($wait->as_millis(), math::MAX_INT32 as int64);
             c_busy($this->raw, $ms as int32);
         }
     }
@@ -178,7 +163,7 @@ public class Database
 
     /**
      * Take the connection's mutex, so a failure and its message are read together. Hand the
-     * result to `c_unlock`.
+     * result to `settle`.
      */
     internal const function lock() : ptr<Mutex>
     {
@@ -187,16 +172,29 @@ public class Database
         return $m;
     }
 
+    /**
+     * Release `$lock` from `lock()`, reading the error of a failed `$rc` first.
+     */
+    internal const function settle(ptr<Mutex> $lock, int32 $rc) : status<Error>
+    {
+        if ($rc == 0) {
+            c_unlock($lock);
+            return .ok();
+        }
+        Error $e = Error::of($this->raw, $rc);
+        c_unlock($lock);
+        return .error($e);
+    }
+
     private static function connect(const string& $name, Mode $mode) : result<Database, Error>
     {
-        string $path = $name->clone();
         ptr<Handle> $raw = null;
-        int32 $rc = c_open($path->cstr(), &$raw, $mode->flags(), null);
+        int32 $rc = c_open($name->cstr(), &$raw, $mode->flags(), null);
         if ($rc != 0) {
+            // SQLite hands out a handle even for a failed open, null only when out of memory, and
+            // closing null does nothing
             Error $e = Error::of($raw, $rc);
-            if ($raw != null) {
-                c_close($raw);
-            }
+            c_close($raw);
             return .error($e);
         }
         c_extended($raw, 1);

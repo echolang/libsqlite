@@ -1,0 +1,121 @@
+/**
+ * Errors: extended codes, the helpers that read them, locks, and where the message comes from.
+ */
+
+use ecotest::expect;
+use ecotest::TempDir;
+
+#[group: "unit"]
+test constraints_say_which
+{
+    $db = fresh();
+    expect($db->exec('PRAGMA foreign_keys = ON; CREATE TABLE p (id INTEGER PRIMARY KEY); CREATE TABLE c (pid INTEGER NOT NULL REFERENCES p(id)); CREATE TABLE u (k TEXT UNIQUE)'))->fine();
+    expect($db->exec("INSERT INTO u VALUES ('a'); INSERT INTO p VALUES (1)"))->fine();
+
+    sqlite::Error $dup = expect($db->exec("INSERT INTO u VALUES ('a')"))->fails();
+    expect($dup->is(.constraint))->yes();
+    expect($dup->primary() == sqlite::Code::constraint)->yes(says: 'a constraint');
+    expect($dup->code)->is(2067);
+    expect($dup->unique())->yes();
+    expect($dup->foreignKey())->no();
+    expect($dup->notNull())->no();
+    expect($dup->message)->has('UNIQUE');
+
+    sqlite::Error $key = expect($db->exec('INSERT INTO p VALUES (1)'))->fails();
+    expect($key->code)->is(1555);
+    expect($key->unique())->yes();
+
+    sqlite::Error $orphan = expect($db->exec('INSERT INTO c VALUES (7)'))->fails();
+    expect($orphan->foreignKey())->yes();
+    expect($orphan->unique())->no();
+
+    sqlite::Error $empty = expect($db->exec('INSERT INTO c VALUES (NULL)'))->fails();
+    expect($empty->notNull())->yes();
+    expect($empty->foreignKey())->no();
+}
+
+#[group: "unit"]
+test bad_sql_is_a_plain_error
+{
+    $db = fresh();
+    sqlite::Error $e = expect($db->prepare('SELEKT 1'))->fails();
+    expect($e->primary() == sqlite::Code::error)->yes(says: 'a plain error');
+    expect($e->is(.error))->yes();
+    expect($e->busy())->no();
+    expect($e->message)->has('syntax');
+}
+
+#[group: "unit"]
+test codes_read_by_their_low_byte
+{
+    sqlite::Error $unique = sqlite::Error(2067, '');
+    expect($unique->primary() == sqlite::Code::constraint)->yes(says: 'a constraint');
+    expect($unique->is(.constraint))->yes();
+    expect($unique->is(.error))->no();
+    sqlite::Error $unnamed = sqlite::Error(99, '');
+    expect($unnamed->primary() == sqlite::Code::error)->yes(says: 'an unnamed code');
+}
+
+#[group: "unit"]
+test an_error_prints_its_code_and_message
+{
+    sqlite::Error $e = sqlite::Error(19, 'constraint failed');
+    expect("{$e}")->is('sqlite error 19: constraint failed');
+}
+
+#[group: "unit"]
+test the_default_error_is_a_plain_one
+{
+    sqlite::Error $e = sqlite::Error();
+    expect($e->code)->is(1);
+    expect($e->message)->empty();
+}
+
+#[group: "file"]
+test another_connection_holding_the_lock_is_busy
+{
+    $dir = TempDir();
+    string $file = $dir->file('busy.sqlite');
+    sqlite::Database $a = expect(sqlite::Database::open($file))->ok();
+    sqlite::Database $b = expect(sqlite::Database::open($file))->ok();
+    expect($a->exec('CREATE TABLE t (v INTEGER)'))->fine();
+    $b->busyTimeout(.zero());
+    expect($a->exec('BEGIN IMMEDIATE'))->fine();
+    sqlite::Error $e = expect($b->exec('INSERT INTO t VALUES (1)'))->fails();
+    expect($e->is(.busy))->yes();
+    expect($e->busy())->yes();
+    expect($a->exec('COMMIT'))->fine();
+    expect($b->exec('INSERT INTO t VALUES (1)'))->fine();
+}
+
+#[group: "unit"]
+test this_connection_holding_the_table_is_locked
+{
+    $db = fresh();
+    expect($db->exec('CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1), (2)'))->fine();
+    sqlite::Statement $q = expect($db->prepare('SELECT v FROM t'))->ok();
+    expect($q->step())->ok(true);
+    sqlite::Error $e = expect($db->exec('DROP TABLE t'))->fails();
+    expect($e->is(.locked))->yes();
+    expect($e->busy())->yes();
+    $q->reset();
+    expect($db->exec('DROP TABLE t'))->fine();
+}
+
+#[group: "unit"]
+test an_error_without_a_connection_takes_sqlites_text
+{
+    sqlite::Error $e = sqlite::Error::of(null, 14);
+    expect($e->code)->is(14);
+    expect($e->message)->is('unable to open database file');
+}
+
+#[group: "unit"]
+test an_older_error_on_the_connection_is_not_reused
+{
+    $db = fresh();
+    expect($db->exec('SELEKT 1'))->fails();
+    sqlite::Error $e = sqlite::Error::of($db->raw, 5);
+    expect($e->code)->is(5);
+    expect($e->message)->is('database is locked');
+}

@@ -1,0 +1,12 @@
+/**
+ * The copies out of SQLite's memory.
+ */
+
+use ecotest::expect;
+
+#[group: "unit"]
+test copies_of_nothing_are_empty
+{
+    expect(sqlite::copyBytes(null, 4))->empty();
+    expect(sqlite::copyText(null))->empty();
+}

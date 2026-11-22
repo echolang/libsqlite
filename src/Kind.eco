@@ -10,4 +10,12 @@ public enum Kind : int32
     case text = 3;
     case blob = 4;
     case none = 5;
+
+    /**
+     * The kind for a `sqlite3_column_type()` answer, `none` for one SQLite does not define.
+     */
+    internal static function of(int32 $type) : Kind
+    {
+        return Kind::from($type) ?? Kind::none;
+    }
 }

@@ -1,0 +1,236 @@
+/**
+ * Statements: binding, stepping, resetting and reading columns.
+ */
+
+use ecotest::expect;
+
+#[group: "unit"]
+test every_kind_round_trips
+{
+    $db = fresh();
+    expect($db->exec('CREATE TABLE t (i INTEGER, f REAL, s TEXT, b BLOB, n TEXT)'))->fine();
+    sqlite::Statement $ins = expect($db->prepare('INSERT INTO t VALUES (?, ?, ?, ?, ?)'))->ok();
+    expect($ins->parameters())->is(5);
+    string $raw = 'a';
+    $raw->push(0);
+    $raw->append('b');
+    expect($ins->bind([.int(-9007199254740993), .float(1.25), .text('grüezi'), .blob($raw), .none]))->fine();
+    expect($ins->run())->fine();
+    expect($db->changes())->is(1);
+    expect($db->lastInsertId())->is(1);
+
+    sqlite::Statement $q = expect($db->prepare('SELECT i, f, s, b, n FROM t'))->ok();
+    expect($q->columns())->is(5);
+    expect($q->step())->ok(true);
+    expect($q->kind(0) == sqlite::Kind::int)->yes(says: 'an integer');
+    expect($q->kind(1) == sqlite::Kind::float)->yes(says: 'a float');
+    expect($q->kind(2) == sqlite::Kind::text)->yes(says: 'text');
+    expect($q->kind(3) == sqlite::Kind::blob)->yes(says: 'a blob');
+    expect($q->kind(4) == sqlite::Kind::none)->yes(says: 'NULL');
+    expect($q->int(0))->some(-9007199254740993);
+    expect($q->float(1))->some(1.25);
+    expect($q->text(2))->some('grüezi');
+    string $back = expect($q->blob(3))->some();
+    expect($back)->length(3)->is($raw);
+    expect($q->isNull(4))->yes();
+    expect($q->isNull(0))->no();
+    expect($q->step())->ok(false);
+}
+
+#[group: "unit"]
+test null_reads_as_absent_for_every_reader
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT NULL'))->ok();
+    expect($q->step())->ok(true);
+    expect($q->int(0))->none();
+    expect($q->float(0))->none();
+    expect($q->text(0))->none();
+    expect($q->blob(0))->none();
+}
+
+#[group: "unit"]
+test sqlite_converts_between_kinds
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare("SELECT '42', 7, 2.5, 'abc'"))->ok();
+    expect($q->step())->ok(true);
+    expect($q->int(0))->some(42);
+    expect($q->float(1))->some(7.0);
+    expect($q->text(2))->some('2.5');
+    expect($q->blob(3))->some('abc');
+}
+
+#[group: "unit"]
+test empty_text_and_blob_are_not_null
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT ?, ?, typeof(?), typeof(?)'))->ok();
+    expect($q->bind([.text(''), .blob(''), .text(''), .blob('')]))->fine();
+    expect($q->step())->ok(true);
+    expect($q->isNull(0))->no();
+    expect($q->text(0))->some('');
+    expect($q->isNull(1))->no();
+    expect($q->blob(1))->some('');
+    expect($q->text(2))->some('text');
+    expect($q->text(3))->some('blob');
+}
+
+#[group: "unit"]
+test empty_strings_of_every_shape_bind_as_empty
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT typeof(?), typeof(?), typeof(?)'))->ok();
+    string $unset;
+    string $cleared = 'abc';
+    $cleared->clear();
+    string $long = 'abcdefghijklmnopqrstuvwxyzabcdefghijklmnop';
+    expect($q->bind([.text($unset), .blob($cleared), .text($long->sub(5, 0))]))->fine();
+    expect($q->step())->ok(true);
+    expect($q->text(0))->some('text');
+    expect($q->text(1))->some('blob');
+    expect($q->text(2))->some('text');
+}
+
+#[group: "unit"]
+test columns_have_names_and_past_the_end_has_none
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT 1 AS a, 2 AS b'))->ok();
+    expect($q->parameters())->is(0);
+    expect($q->columns())->is(2);
+    expect($q->name(0))->is('a');
+    expect($q->name(1))->is('b');
+    expect($q->name(5))->empty();
+}
+
+#[group: "unit"]
+test kinds_sqlite_does_not_define_read_as_none
+{
+    expect(sqlite::Kind::of(3) == sqlite::Kind::text)->yes(says: 'SQLITE_TEXT');
+    expect(sqlite::Kind::of(0) == sqlite::Kind::none)->yes(says: 'an unknown type');
+}
+
+#[group: "unit"]
+test reset_keeps_bindings_unless_cleared
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT ?'))->ok();
+    expect($q->bind(0, .int(7)))->fine();
+    expect($q->step())->ok(true);
+    expect($q->int(0))->some(7);
+    $q->reset();
+    expect($q->step())->ok(true);
+    expect($q->int(0))->some(7);
+    $q->reset(true);
+    expect($q->step())->ok(true);
+    expect($q->int(0))->none();
+}
+
+#[group: "unit"]
+test binding_mid_step_needs_a_reset
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT ?'))->ok();
+    expect($q->bind(0, .int(1)))->fine();
+    expect($q->step())->ok(true);
+    sqlite::Error $e = expect($q->bind(0, .int(2)))->fails();
+    expect($e->is(.misuse))->yes();
+    $q->reset();
+    expect($q->bind(0, .int(2)))->fine();
+    expect($q->step())->ok(true);
+    expect($q->int(0))->some(2);
+}
+
+#[group: "unit"]
+test a_statement_runs_again_after_reset
+{
+    $db = fresh();
+    expect($db->exec('CREATE TABLE t (v INTEGER)'))->fine();
+    sqlite::Statement $ins = expect($db->prepare('INSERT INTO t VALUES (?)'))->ok();
+    for (int64 $i = 0; $i < 10; $i++) {
+        $ins->reset();
+        expect($ins->bind(0, .int($i)))->fine();
+        expect($ins->run())->fine();
+    }
+    sqlite::Statement $sum = expect($db->prepare('SELECT sum(v), count(*) FROM t'))->ok();
+    expect($sum->step())->ok(true);
+    expect($sum->int(0))->some(45);
+    expect($sum->int(1))->some(10);
+}
+
+#[group: "unit"]
+test run_leaves_the_statement_ready_to_bind_again
+{
+    $db = fresh();
+    expect($db->exec('CREATE TABLE t (v INTEGER)'))->fine();
+    sqlite::Statement $ins = expect($db->prepare('INSERT INTO t VALUES (?)'))->ok();
+    expect($ins->bind(0, .int(1)))->fine();
+    expect($ins->run())->fine();
+    expect($ins->bind(0, .int(2)))->fine();
+    expect($ins->run())->fine();
+    sqlite::Statement $sum = expect($db->prepare('SELECT sum(v) FROM t'))->ok();
+    expect($sum->step())->ok(true);
+    expect($sum->int(0))->some(3);
+}
+
+#[group: "unit"]
+test run_steps_past_every_row
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3'))->ok();
+    expect($q->run())->fine();
+    // reset, so the rows come again
+    expect($q->step())->ok(true);
+    expect($q->int(0))->some(1);
+}
+
+#[group: "unit"]
+test a_failed_run_leaves_the_statement_ready_again
+{
+    $db = fresh();
+    expect($db->exec('CREATE TABLE u (k TEXT UNIQUE)'))->fine();
+    sqlite::Statement $ins = expect($db->prepare('INSERT INTO u VALUES (?)'))->ok();
+    expect($ins->bind([.text('a')]))->fine();
+    expect($ins->run())->fine();
+    sqlite::Error $dup = expect($ins->run())->fails();
+    expect($dup->unique())->yes();
+    expect($ins->bind([.text('b')]))->fine();
+    expect($ins->run())->fine();
+    expect($db->changes())->is(1);
+    expect(count($db, 'u'))->is(2);
+}
+
+#[group: "unit"]
+test an_out_of_range_bind_says_so
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT ?'))->ok();
+    sqlite::Error $e = expect($q->bind(1, .int(1)))->fails();
+    expect($e->is(.range))->yes();
+    expect($e->message)->has('range');
+}
+
+#[group: "unit"]
+test binding_too_many_values_stops_at_the_first_refusal
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT ?'))->ok();
+    sqlite::Error $e = expect($q->bind([.int(1), .int(2), .int(3)]))->fails();
+    expect($e->is(.range))->yes();
+    // the values before the refusal are bound
+    expect($q->step())->ok(true);
+    expect($q->int(0))->some(1);
+}
+
+#[group: "unit"]
+test statements_refuse_once_the_connection_is_closed
+{
+    $db = fresh();
+    sqlite::Statement $q = expect($db->prepare('SELECT ?'))->ok();
+    $db->close();
+    sqlite::Error $e = expect($q->step())->fails();
+    expect($e->is(.misuse))->yes();
+    expect($q->bind([.int(1)]))->fails();
+    expect($q->bind(0, .int(1)))->fails();
+}
