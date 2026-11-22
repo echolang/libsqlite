@@ -1,0 +1,228 @@
+use std::time;
+
+function fresh() : sqlite::Database
+{
+    sqlite::Database $db = guard sqlite::Database::memory() else ($e) { die("{$e}"); };
+    return $db;
+}
+
+test every_kind_round_trips
+{
+    $db = fresh();
+    guard $db->exec('CREATE TABLE t (i INTEGER, f REAL, s TEXT, b BLOB, n TEXT)');
+    sqlite::Statement $ins = guard $db->prepare('INSERT INTO t VALUES (?, ?, ?, ?, ?)');
+    assert($ins->parameters() == 5);
+    string $raw = 'a';
+    $raw->push(0);
+    $raw->append('b');
+    guard $ins->bind([.int(-9007199254740993), .float(1.25), .text('grüezi'), .blob($raw), .none]);
+    guard $ins->run();
+    assert($db->changes() == 1);
+    assert($db->lastInsertId() == 1);
+
+    sqlite::Statement $q = guard $db->prepare('SELECT i, f, s, b, n FROM t');
+    assert($q->columns() == 5);
+    assert($q->name(2) == 's');
+    bool $row = guard $q->step();
+    assert($row);
+    assert($q->kind(0) == sqlite::Kind::int);
+    assert(($q->int(0) ?? 0) == -9007199254740993);
+    assert(($q->float(1) ?? 0.0) == 1.25);
+    assert(($q->text(2) ?? '') == 'grüezi');
+    string $back = $q->blob(3) ?? '';
+    assert($back->size() == 3);
+    assert($back == $raw);
+    assert($q->isNull(4));
+    assert($q->text(4) == null);
+    bool $more = guard $q->step();
+    assert(!$more);
+}
+
+test empty_text_and_blob_are_not_null
+{
+    $db = fresh();
+    sqlite::Statement $q = guard $db->prepare('SELECT ?, ?, typeof(?), typeof(?)');
+    guard $q->bind([.text(''), .blob(''), .text(''), .blob('')]);
+    guard $q->step();
+    assert(!$q->isNull(0));
+    assert(($q->text(0) ?? 'x') == '');
+    assert(!$q->isNull(1));
+    assert(($q->text(2) ?? '') == 'text');
+    assert(($q->text(3) ?? '') == 'blob');
+}
+
+test a_statement_runs_again_after_reset
+{
+    $db = fresh();
+    guard $db->exec('CREATE TABLE t (v INTEGER)');
+    sqlite::Statement $ins = guard $db->prepare('INSERT INTO t VALUES (?)');
+    int64 $i = 0;
+    while ($i < 10) {
+        $ins->reset();
+        guard $ins->bind(0, .int($i));
+        guard $ins->run();
+        $i++;
+    }
+    sqlite::Statement $sum = guard $db->prepare('SELECT sum(v), count(*) FROM t');
+    guard $sum->step();
+    assert(($sum->int(0) ?? 0) == 45);
+    assert(($sum->int(1) ?? 0) == 10);
+}
+
+test constraints_say_which
+{
+    $db = fresh();
+    guard $db->exec('PRAGMA foreign_keys = ON; CREATE TABLE p (id INTEGER PRIMARY KEY); CREATE TABLE c (pid INTEGER NOT NULL REFERENCES p(id)); CREATE TABLE u (k TEXT UNIQUE)');
+    guard $db->exec("INSERT INTO u VALUES ('a')");
+    status<sqlite::Error> $dup = $db->exec("INSERT INTO u VALUES ('a')");
+    match ($dup) {
+        .error($e) => {
+            assert($e->is(.constraint));
+            assert($e->unique());
+            assert($e->message->contains('UNIQUE'));
+        },
+        else => { assert(false); },
+    };
+    status<sqlite::Error> $orphan = $db->exec('INSERT INTO c VALUES (7)');
+    match ($orphan) {
+        .error($e) => { assert($e->foreignKey()); },
+        else => { assert(false); },
+    };
+    status<sqlite::Error> $empty = $db->exec('INSERT INTO c VALUES (NULL)');
+    match ($empty) {
+        .error($e) => { assert($e->notNull()); },
+        else => { assert(false); },
+    };
+}
+
+test bad_sql_is_an_error
+{
+    $db = fresh();
+    result<sqlite::Statement, sqlite::Error> $r = $db->prepare('SELEKT 1');
+    match ($r) {
+        .error($e) => {
+            assert($e->primary() == sqlite::Code::error);
+            assert($e->message->contains('syntax'));
+        },
+        else => { assert(false); },
+    };
+}
+
+test transactions_commit_and_roll_back
+{
+    $db = fresh();
+    guard $db->exec('CREATE TABLE t (v INTEGER)');
+    assert($db->autocommit());
+    guard $db->exec('BEGIN IMMEDIATE');
+    assert(!$db->autocommit());
+    guard $db->exec('INSERT INTO t VALUES (1)');
+    guard $db->exec('ROLLBACK');
+    guard $db->exec('BEGIN');
+    guard $db->exec('INSERT INTO t VALUES (2)');
+    guard $db->exec('COMMIT');
+    sqlite::Statement $q = guard $db->prepare('SELECT group_concat(v) FROM t');
+    guard $q->step();
+    assert(($q->text(0) ?? '') == '2');
+}
+
+test a_file_keeps_its_rows
+{
+    std::fs::path $dir = guard std::fs::tempdir();
+    std::fs::path $file = $dir / 'kept.sqlite';
+    {
+        sqlite::Database $db = guard sqlite::Database::open($file);
+        $db->busyTimeout(time::duration::secs(1));
+        guard $db->exec("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept')");
+    }
+    {
+        sqlite::Database $again = guard sqlite::Database::open($file, mode: .readOnly);
+        sqlite::Statement $q = guard $again->prepare('SELECT v FROM t');
+        guard $q->step();
+        assert(($q->text(0) ?? '') == 'kept');
+    }
+    result<sqlite::Database, sqlite::Error> $missing = sqlite::Database::open($dir / 'nope' / 'x.sqlite', mode: .readWrite);
+    assert($missing->failed());
+    guard std::fs::remove($file);
+    guard std::fs::rmdir($dir);
+}
+
+test closed_connections_refuse
+{
+    $db = fresh();
+    $db->close();
+    assert(!$db->open());
+    assert($db->exec('SELECT 1')->failed());
+    // sqlite3_changes64 arrived in 3.37.0
+    assert(sqlite::Database::version() >= 3037000);
+}
+
+test run_leaves_the_statement_ready_to_bind_again
+{
+    $db = fresh();
+    guard $db->exec('CREATE TABLE t (v INTEGER)');
+    sqlite::Statement $ins = guard $db->prepare('INSERT INTO t VALUES (?)');
+    guard $ins->bind(0, .int(1));
+    guard $ins->run();
+    guard $ins->bind(0, .int(2));
+    guard $ins->run();
+    sqlite::Statement $sum = guard $db->prepare('SELECT sum(v) FROM t');
+    guard $sum->step();
+    assert(($sum->int(0) ?? 0) == 3);
+}
+
+test statements_refuse_once_the_connection_is_closed
+{
+    $db = fresh();
+    sqlite::Statement $q = guard $db->prepare('SELECT 1');
+    $db->close();
+    assert($q->step()->failed());
+    assert($q->bind([.int(1)])->failed());
+}
+
+test sql_without_a_statement_is_an_error
+{
+    $db = fresh();
+    $db->exec('SELEKT 1');
+    result<sqlite::Statement, sqlite::Error> $blank = $db->prepare('');
+    match ($blank) {
+        .error($e) => {
+            assert($e->is(.misuse));
+            assert(!$e->message->contains('syntax'));
+        },
+        else => { assert(false); },
+    };
+    result<sqlite::Statement, sqlite::Error> $comment = $db->prepare('-- nothing');
+    assert($comment->failed());
+}
+
+test a_failed_run_leaves_the_statement_ready_again
+{
+    $db = fresh();
+    guard $db->exec('CREATE TABLE u (k TEXT UNIQUE)');
+    sqlite::Statement $ins = guard $db->prepare('INSERT INTO u VALUES (?)');
+    guard $ins->bind([.text('a')]);
+    guard $ins->run();
+    status<sqlite::Error> $dup = $ins->run();
+    assert($dup->failed());
+    guard $ins->bind([.text('b')]);
+    guard $ins->run();
+    assert($db->changes() == 1);
+}
+
+test an_out_of_range_bind_says_so
+{
+    $db = fresh();
+    sqlite::Statement $q = guard $db->prepare('SELECT ?');
+    status<sqlite::Error> $r = $q->bind(1, .int(1));
+    match ($r) {
+        .error($e) => { assert($e->is(.range)); },
+        else => { assert(false); },
+    };
+}
+
+test a_huge_busy_timeout_is_clamped
+{
+    $db = fresh();
+    $db->busyTimeout(time::duration::secs(10000000));
+    guard $db->exec('SELECT 1');
+}

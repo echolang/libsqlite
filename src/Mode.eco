@@ -1,0 +1,36 @@
+namespace sqlite;
+
+/**
+ * How `Database::open` opens a file.
+ */
+public enum Mode
+{
+    /**
+     * Reads only; the file has to exist.
+     */
+    case readOnly;
+
+    /**
+     * Reads and writes; the file has to exist.
+     */
+    case readWrite;
+
+    /**
+     * Reads and writes, creating the file when it is missing.
+     */
+    case create;
+
+    /**
+     * The `SQLITE_OPEN_*` flags, always with a serialized connection (one may cross threads) and
+     * URI filenames.
+     */
+    internal const function flags() : int32
+    {
+        int32 $base = 65536 | 64;
+        return match ($this) {
+            Mode::readOnly => $base | 1,
+            Mode::readWrite => $base | 2,
+            Mode::create => $base | 2 | 4,
+        };
+    }
+}

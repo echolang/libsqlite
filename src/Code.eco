@@ -1,0 +1,52 @@
+namespace sqlite;
+
+/**
+ * SQLite's primary result codes: the low byte of every extended code.
+ */
+public enum Code : int32
+{
+    case ok = 0;
+    case error = 1;
+    case internalError = 2;
+    case permission = 3;
+    case abort = 4;
+
+    /**
+     * Another connection holds the lock this one needs, longer than the busy timeout waited.
+     */
+    case busy = 5;
+
+    /**
+     * A conflict inside this connection, such as a write while a read is open on the table.
+     */
+    case locked = 6;
+    case noMemory = 7;
+    case readOnly = 8;
+    case interrupt = 9;
+    case io = 10;
+    case corrupt = 11;
+    case notFound = 12;
+    case full = 13;
+    case cannotOpen = 14;
+    case protocol = 15;
+    case empty = 16;
+    case schema = 17;
+    case tooBig = 18;
+
+    /**
+     * A UNIQUE, PRIMARY KEY, FOREIGN KEY, NOT NULL or CHECK constraint refused the write; the
+     * extended code says which.
+     */
+    case constraint = 19;
+    case mismatch = 20;
+    case misuse = 21;
+    case noLargeFile = 22;
+    case auth = 23;
+    case format = 24;
+    case range = 25;
+    case notADatabase = 26;
+    case notice = 27;
+    case warning = 28;
+    case row = 100;
+    case done = 101;
+}

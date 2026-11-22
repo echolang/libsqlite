@@ -1,0 +1,13 @@
+namespace sqlite;
+
+/**
+ * The storage class of a value in a result column.
+ */
+public enum Kind : int32
+{
+    case int = 1;
+    case float = 2;
+    case text = 3;
+    case blob = 4;
+    case none = 5;
+}

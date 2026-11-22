@@ -1,0 +1,21 @@
+/*
+ * libsqlite: SQLite for Echo, on the system's libsqlite3.
+ *
+ * A connection (`Database`), prepared statements with typed binds and column reads, and errors
+ * that keep SQLite's extended result code. Nothing more: transactions, pragmas and schema are
+ * plain SQL through `exec`.
+ */
+
+#[module: "libsqlite"]
+#[version: "0.1.0"] // x-release-please-version
+#[epm::echoc: ">=0.16.0"]
+#[epm::license: "MIT"]
+#[epm::description: "sqlite for echolang, on the system libsqlite3"]
+
+#[link: lib "sqlite3"]
+
+#[sources: "src/*.eco"]
+
+#[target: test] {
+    #[sources: "tests/*.eco"]
+}

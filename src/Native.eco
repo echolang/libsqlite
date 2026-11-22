@@ -1,0 +1,84 @@
+namespace sqlite;
+
+/**
+ * An open connection, as SQLite hands it out.
+ */
+extern struct Handle;
+
+/**
+ * A prepared statement, as SQLite hands it out.
+ */
+extern struct Prepared;
+
+/**
+ * A connection's mutex, held across a call and the read of its error so another thread cannot
+ * replace the error in between.
+ */
+extern struct Mutex;
+
+// every C symbol libsqlite is built from, and nothing else; destructor arguments are pointer
+// sized integers so SQLITE_TRANSIENT (-1) can be passed
+internal extern {
+    function sqlite3_libversion_number as c_version() : int32;
+    function sqlite3_open_v2 as c_open(ptr<const uint8> $path, ptr<ptr<Handle>> $out, int32 $flags, ptr<const uint8> $vfs) : int32;
+    function sqlite3_close_v2 as c_close(ptr<Handle> $db) : int32;
+    function sqlite3_extended_result_codes as c_extended(ptr<Handle> $db, int32 $on) : int32;
+    function sqlite3_errmsg as c_errmsg(ptr<Handle> $db) : ptr<const uint8>;
+    function sqlite3_errstr as c_errstr(int32 $code) : ptr<const uint8>;
+    function sqlite3_extended_errcode as c_errcode(ptr<Handle> $db) : int32;
+    function sqlite3_db_mutex as c_mutex(ptr<Handle> $db) : ptr<Mutex>;
+    function sqlite3_mutex_enter as c_lock(ptr<Mutex> $m) : void;
+    function sqlite3_mutex_leave as c_unlock(ptr<Mutex> $m) : void;
+    function sqlite3_exec as c_exec(ptr<Handle> $db, ptr<const uint8> $sql, ptr<uint8> $callback, ptr<uint8> $arg, ptr<ptr<uint8>> $error) : int32;
+    function sqlite3_busy_timeout as c_busy(ptr<Handle> $db, int32 $ms) : int32;
+    function sqlite3_changes64 as c_changes(ptr<Handle> $db) : int64;
+    function sqlite3_last_insert_rowid as c_rowid(ptr<Handle> $db) : int64;
+    function sqlite3_get_autocommit as c_autocommit(ptr<Handle> $db) : int32;
+    function sqlite3_prepare_v2 as c_prepare(ptr<Handle> $db, ptr<const uint8> $sql, int32 $bytes, ptr<ptr<Prepared>> $out, ptr<ptr<const uint8>> $tail) : int32;
+    function sqlite3_bind_parameter_count as c_params(ptr<Prepared> $s) : int32;
+    function sqlite3_bind_null as c_bind_null(ptr<Prepared> $s, int32 $at) : int32;
+    function sqlite3_bind_int64 as c_bind_int(ptr<Prepared> $s, int32 $at, int64 $v) : int32;
+    function sqlite3_bind_double as c_bind_float(ptr<Prepared> $s, int32 $at, float64 $v) : int32;
+    function sqlite3_bind_text64 as c_bind_text(ptr<Prepared> $s, int32 $at, ptr<const uint8> $text, uint64 $bytes, int64 $destructor, uint8 $encoding) : int32;
+    function sqlite3_bind_blob64 as c_bind_blob(ptr<Prepared> $s, int32 $at, ptr<const uint8> $data, uint64 $bytes, int64 $destructor) : int32;
+    function sqlite3_bind_zeroblob as c_bind_zeroblob(ptr<Prepared> $s, int32 $at, int32 $bytes) : int32;
+    function sqlite3_step as c_step(ptr<Prepared> $s) : int32;
+    function sqlite3_reset as c_reset(ptr<Prepared> $s) : int32;
+    function sqlite3_clear_bindings as c_clear(ptr<Prepared> $s) : int32;
+    function sqlite3_finalize as c_finalize(ptr<Prepared> $s) : int32;
+    function sqlite3_column_count as c_columns(ptr<Prepared> $s) : int32;
+    function sqlite3_column_name as c_column_name(ptr<Prepared> $s, int32 $at) : ptr<const uint8>;
+    function sqlite3_column_type as c_column_type(ptr<Prepared> $s, int32 $at) : int32;
+    function sqlite3_column_int64 as c_column_int(ptr<Prepared> $s, int32 $at) : int64;
+    function sqlite3_column_double as c_column_float(ptr<Prepared> $s, int32 $at) : float64;
+    function sqlite3_column_text as c_column_text(ptr<Prepared> $s, int32 $at) : ptr<const uint8>;
+    function sqlite3_column_blob as c_column_blob(ptr<Prepared> $s, int32 $at) : ptr<const uint8>;
+    function sqlite3_column_bytes as c_column_bytes(ptr<Prepared> $s, int32 $at) : int32;
+}
+
+/**
+ * `$bytes` bytes from `$from`, copied into a string of their own: SQLite reuses the buffer on the
+ * next step, and text or a blob may hold zero bytes, so no terminator is trusted.
+ */
+internal function copyBytes(ptr<const uint8> $from, usize $bytes) : string
+{
+    string $out = '';
+    if ($bytes == 0 || $from:$ == null) {
+        return $out;
+    }
+    $out->reserve($bytes);
+    mem::copy($out->spare(), ptr<uint8>($from:$), $bytes);
+    $out->commit($bytes);
+    return $out;
+}
+
+/**
+ * A NUL-terminated string from SQLite, copied; empty for a null pointer.
+ */
+internal function copyText(ptr<const uint8> $from) : string
+{
+    if ($from:$ == null) {
+        return '';
+    }
+    return str::from(ptr<uint8>($from:$));
+}

@@ -1,0 +1,17 @@
+namespace sqlite;
+
+/**
+ * A value to bind to a statement parameter.
+ */
+public enum Value
+{
+    case none;
+    case int(int64 $v);
+    case float(float64 $v);
+    case text(string $v);
+
+    /**
+     * Raw bytes, stored as a BLOB.
+     */
+    case blob(string $v);
+}

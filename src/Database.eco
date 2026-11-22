@@ -1,0 +1,205 @@
+namespace sqlite;
+
+use std::math;
+use std::time;
+
+/**
+ * One connection to an SQLite database: a file, or memory with `Database::memory()`.
+ *
+ * ```echo
+ * sqlite::Database $db = guard sqlite::Database::open('app.sqlite');
+ * guard $db->exec('CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)');
+ * sqlite::Statement $ins = guard $db->prepare('INSERT INTO notes (body) VALUES (?)');
+ * guard $ins->bind([.text('hello')]);
+ * guard $ins->run();
+ * ```
+ *
+ * A connection is serialized, so handing it to another thread is safe; for work in parallel,
+ * every thread opens its own. A `Statement` stays on the thread that prepared it. The connection
+ * closes when the last holder lets go, after its statements.
+ */
+#[atomic]
+public class Database
+{
+    internal ptr<Handle> $raw;
+
+    private constructor(ptr<Handle> $raw)
+    {
+        $this->raw = $raw;
+    }
+
+    destructor()
+    {
+        $this->close();
+    }
+
+    /**
+     * Open the database file at `$path`, `create`d when missing unless `$mode` says otherwise.
+     * `:memory:` and `file:` URIs work too.
+     */
+    public static function open(const std::fs::path& $path, mode: Mode $mode = .create) : result<Database, Error>
+    {
+        string $name = $path->string();
+        return Database::connect($name, $mode);
+    }
+
+    /**
+     * A database in memory, private to this connection and gone with it.
+     */
+    public static function memory() : result<Database, Error>
+    {
+        return Database::connect(':memory:', .create);
+    }
+
+    /**
+     * `sqlite3_libversion_number()` of the library linked in, such as 3045000 for 3.45.0.
+     */
+    public static function version() : uint32
+    {
+        return c_version() as uint32;
+    }
+
+    /**
+     * Run SQL for what it does, several statements separated by `;` included. Rows are dropped.
+     */
+    public function exec(const string& $sql) : status<Error>
+    {
+        try $this->live();
+        string $text = $sql->clone();
+        ptr<Mutex> $lock = $this->lock();
+        int32 $rc = c_exec($this->raw, $text->cstr(), null, null, null);
+        if ($rc != 0) {
+            Error $e = Error::of($this->raw, $rc);
+            c_unlock($lock);
+            return .error($e);
+        }
+        c_unlock($lock);
+        return .ok();
+    }
+
+    /**
+     * Compile the first statement of `$sql`; anything after it is ignored.
+     */
+    public function prepare(const string& $sql) : result<Statement, Error>
+    {
+        try $this->live();
+        if ($sql->empty()) {
+            return .error(Error::blank());
+        }
+        ptr<Prepared> $out = null;
+        ptr<Mutex> $lock = $this->lock();
+        int32 $rc = c_prepare($this->raw, $sql->data(), $sql->size() as int32, &$out, null);
+        if ($rc != 0) {
+            Error $e = Error::of($this->raw, $rc);
+            c_unlock($lock);
+            return .error($e);
+        }
+        c_unlock($lock);
+        if ($out == null) {
+            return .error(Error::blank());
+        }
+        return .ok(Statement($this, $out));
+    }
+
+    /**
+     * How long a statement waits for another connection's lock before it fails as busy. Zero
+     * turns waiting off; anything past 24 days waits 24 days.
+     */
+    public function busyTimeout(time::duration $wait) : void
+    {
+        if ($this->raw != null) {
+            int64 $ms = math::min($wait->as_millis(), 2147483647 as int64);
+            c_busy($this->raw, $ms as int32);
+        }
+    }
+
+    /**
+     * The rows the last INSERT, UPDATE or DELETE changed (matched, for an UPDATE).
+     */
+    public const function changes() : int64
+    {
+        if ($this->raw == null) {
+            return 0;
+        }
+        return c_changes($this->raw);
+    }
+
+    /**
+     * The rowid of the last row inserted on this connection.
+     */
+    public const function lastInsertId() : int64
+    {
+        if ($this->raw == null) {
+            return 0;
+        }
+        return c_rowid($this->raw);
+    }
+
+    /**
+     * Whether no transaction is open.
+     */
+    public const function autocommit() : bool
+    {
+        if ($this->raw == null) {
+            return true;
+        }
+        return c_autocommit($this->raw) != 0;
+    }
+
+    /**
+     * Whether the connection is still open.
+     */
+    public const function open() : bool
+    {
+        return $this->raw != null;
+    }
+
+    /**
+     * Close now. Statements still held keep the file open until they are dropped, but refuse to
+     * run; using the connection or its statements afterwards fails as misuse. Not while another
+     * thread is using the connection.
+     */
+    public function close() : void
+    {
+        if ($this->raw == null) {
+            return;
+        }
+        c_close($this->raw);
+        $this->raw = null;
+    }
+
+    internal const function live() : status<Error>
+    {
+        if ($this->raw == null) {
+            return .error(Error(Code::misuse->value(), 'the connection is closed'));
+        }
+        return .ok();
+    }
+
+    /**
+     * Take the connection's mutex, so a failure and its message are read together. Hand the
+     * result to `c_unlock`.
+     */
+    internal const function lock() : ptr<Mutex>
+    {
+        ptr<Mutex> $m = c_mutex($this->raw);
+        c_lock($m);
+        return $m;
+    }
+
+    private static function connect(const string& $name, Mode $mode) : result<Database, Error>
+    {
+        string $path = $name->clone();
+        ptr<Handle> $raw = null;
+        int32 $rc = c_open($path->cstr(), &$raw, $mode->flags(), null);
+        if ($rc != 0) {
+            Error $e = Error::of($raw, $rc);
+            if ($raw != null) {
+                c_close($raw);
+            }
+            return .error($e);
+        }
+        c_extended($raw, 1);
+        return .ok(Database($raw));
+    }
+}

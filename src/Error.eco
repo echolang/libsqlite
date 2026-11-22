@@ -1,0 +1,99 @@
+namespace sqlite;
+
+/**
+ * What SQLite said went wrong: its extended result code and its message.
+ */
+public struct Error
+{
+    /**
+     * The extended result code, such as 2067 for a UNIQUE constraint. The low byte is the primary
+     * code.
+     */
+    public int32 $code = 1;
+
+    /**
+     * SQLite's text for the failure, such as `UNIQUE constraint failed: notes.body`.
+     */
+    public string $message = '';
+
+    /**
+     * The primary code, or `error` for one this library does not name.
+     */
+    public const function primary() : Code
+    {
+        return Code::from($this->code & 255) ?? Code::error;
+    }
+
+    /**
+     * Whether the primary code is `$c`.
+     */
+    public const function is(Code $c) : bool
+    {
+        return ($this->code & 255) == $c->value();
+    }
+
+    /**
+     * A lock stopped the statement: another connection held one past the busy timeout, or work
+     * on this connection holds the table. Running it again, once the lock is gone, may work.
+     */
+    public const function busy() : bool
+    {
+        return $this->is(.busy) || $this->is(.locked);
+    }
+
+    /**
+     * A UNIQUE or PRIMARY KEY constraint refused the write.
+     */
+    public const function unique() : bool
+    {
+        return $this->code == 2067 || $this->code == 1555;
+    }
+
+    /**
+     * A FOREIGN KEY constraint refused the write.
+     */
+    public const function foreignKey() : bool
+    {
+        return $this->code == 787;
+    }
+
+    /**
+     * A NOT NULL constraint refused the write.
+     */
+    public const function notNull() : bool
+    {
+        return $this->code == 1299;
+    }
+
+    /**
+     * SQL that holds no statement, only whitespace or comments.
+     */
+    internal static function blank() : Error
+    {
+        return Error(Code::misuse->value(), 'there is no statement in the SQL');
+    }
+
+    /**
+     * The last error of `$db`, or SQLite's text for `$code` when the connection has none or holds
+     * a different one. Call it with the connection's mutex held since the call that failed.
+     */
+    internal static function of(ptr<Handle> $db, int32 $code) : Error
+    {
+        if ($db == null) {
+            return Error($code, copyText(c_errstr($code)));
+        }
+        int32 $extended = c_errcode($db);
+        if (($extended & 255) != ($code & 255)) {
+            // the connection's message belongs to an older failure
+            return Error($code, copyText(c_errstr($code)));
+        }
+        return Error($extended, copyText(c_errmsg($db)));
+    }
+}
+
+namespace str;
+
+public function from(const sqlite::Error& $e) : string
+{
+    return "sqlite error {$e->code}: {$e->message}";
+}
